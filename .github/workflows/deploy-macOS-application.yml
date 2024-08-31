@@ -23,7 +23,6 @@ jobs:
     - name: Install dependencies on macOS
       if: matrix.os == 'macos-latest'
       run: |
-        python3 -m pip install --upgrade pip
         pip install -r requirements.txt
         pip install pyinstaller
 
@@ -33,12 +32,10 @@ jobs:
     - name: Package with PyInstaller on macOS
       if: matrix.os == 'macos-latest'
       run: |
-        pyinstaller main.py --noconfirm --noconsole --distpath=dist --workpath=build --icon=./images/icon.icns --osx-bundle-identifier app.ghost.downloader
+        pyinstaller main.py --noconfirm --noconsole --distpath=dist --workpath=build --icon=/images/icon.icns --osx-bundle-identifier app.ghost.downloader
 
     - name: Add plugins folder to dist
       run: cp -r ./plugins dist/main/
-
-    - name: Compress the package on Windows
 
     - name: Compress the package on macOS
       if: matrix.os == 'macos-latest'
