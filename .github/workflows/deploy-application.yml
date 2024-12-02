@@ -25,12 +25,12 @@ jobs:
 
       - name: Build with Nuitka
         run: |
-          mv main.py "GhostDownloader3.py"
+          mv main.py GhostDownloader3.py
           python -c "import sys; sys.path.append('./app/common'); import config; print(config.VERSION)" > version.txt
           $version = (Get-Content version.txt)[3]
           echo "VERSION=$version" >> "$GITHUB_ENV"
           echo "VERSION=$version"
-          nuitka --standalone --enable-plugin=pyside6 --show-memory --output-dir=output --disable-console --windows-icon-from-ico=images/logo.ico --company-name=XiaoYouChR --product-name="GhostDownloader3" --file-description="GhostDownloader3" --copyright="Copyright(C) 2024 XiaoYouChR" --file-version=$version --product-version=$version "GhostDownloader3.py"
+          nuitka --standalone --enable-plugin=pyside6 --show-memory --output-dir=output --windows-console-mode=disable --windows-icon-from-ico=images/logo.ico --company-name=XiaoYouChR --product-name="Ghost Downloader" --file-description="Ghost Downloader" --copyright="Copyright(C) 2024 XiaoYouChR" --file-version=$version --product-version=$version "GhostDownloader3.py"
           nuitka --module plugins/jy_os_page.py
           mkdir -p "output/GhostDownloader3.dist/plugins/"
           mv jy_os_page*.pyd "output/GhostDownloader3.dist/plugins/"
@@ -39,7 +39,7 @@ jobs:
         uses: actions/upload-artifact@v3
         with:
           name: Ghost-Downloader-v${{ env.VERSION }}-Windows-${{ matrix.architecture }}
-          path: output/GhostDownloader3.dist
+          path: output/
 
   build-macos-14-arm:
     strategy:
@@ -69,14 +69,14 @@ jobs:
           echo "VERSION=${{ env.VERSION }}"
           nuitka --standalone --enable-plugin=pyside6 --show-memory --output-dir=output --disable-console --macos-app-icon=images/logo.icns --macos-create-app-bundle --company-name=XiaoYouChR --macos-app-name="GhostDownloader3" --macos-app-version=$version --macos-signed-app-name=com.xiaoyouchr.ghostdownloader "GhostDownloader3.py"
           nuitka --module plugins/jy_os_page.py
-          mkdir -p "output/GhostDownloader3.app/MacOS/plugins/"
+          mkdir -p "output/GhostDownloader3.app/Contents/MacOS/plugins/"
           mv jy_os_page*.so "output/GhostDownloader3.app/Contents/MacOS/plugins/"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v3
         with:
-          name: Ghost-Downloader-v${{ env.VERSION }}-macOS-${{ matrix.architecture }}.app
-          path: output/GhostDownloader3.app
+          name: Ghost-Downloader-v${{ env.VERSION }}-macOS-${{ matrix.architecture }}
+          path: output/
 
   build-macos-13-x86_64:
     strategy:
@@ -99,6 +99,9 @@ jobs:
 
       - name: Build with Nuitka
         run: |
+          brew update
+          brew install openssl
+          brew link --force openssl
           mv main.py "GhostDownloader3.py"
           python -c "import sys; sys.path.append('./app/common'); import config; print(config.VERSION)" > version.txt
           version=$(sed -n '4p' version.txt)
@@ -106,14 +109,14 @@ jobs:
           echo "VERSION=${{ env.VERSION }}"
           nuitka --standalone --enable-plugin=pyside6 --show-memory --output-dir=output --disable-console --macos-app-icon=images/logo.icns --macos-create-app-bundle --company-name=XiaoYouChR --macos-app-name="GhostDownloader3" --macos-app-version=$version --macos-signed-app-name=com.xiaoyouchr.ghostdownloader "GhostDownloader3.py"
           nuitka --module plugins/jy_os_page.py
-          mkdir -p "output/GhostDownloader3.app/MacOS/plugins/"
+          mkdir -p "output/GhostDownloader3.app/Contents/MacOS/plugins/"
           mv jy_os_page*.so "output/GhostDownloader3.app/Contents/MacOS/plugins/"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v3
         with:
-          name: Ghost-Downloader-v${{ env.VERSION }}-macOS-${{ matrix.architecture }}.app
-          path: output/GhostDownloader3.app
+          name: Ghost-Downloader-v${{ env.VERSION }}-macOS-${{ matrix.architecture }}
+          path: output/
 
   build-ubuntu:
     strategy:
