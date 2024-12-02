@@ -1,10 +1,12 @@
 import asyncio
 import struct
+import sys
 import time
 from asyncio import Task
 from pathlib import Path
 from threading import Thread
 
+import aiofiles
 import httpx
 from PySide6.QtCore import QThread, Signal
 from loguru import logger
@@ -23,33 +25,6 @@ Headers = {
     "upgrade-insecure-requests": "1",
     "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36 Edg/112.0.1722.64"}
 
-
-# def getRealUrl(url: str):
-#     response = httpx.head(url=url, headers=Headers, follow_redirects=False, verify=False,
-#                           proxyServer=getProxy())
-#
-#     if response.status_code == 400:  # Bad Requests
-#         # TODO 报错处理
-#         logger.error("HTTP status code 400, it seems that the url is unavailable")
-#         return
-#
-#     while response.status_code == 302:  # 当302的时候
-#         rs = response.headers["location"]  # 获取重定向信息
-#         logger.info(f'HTTP status code:302, Headers["Location"] is: {rs}')
-#         # 看它返回的是不是完整的URL
-#         t = urlRe.search(rs)
-#         if t:  # 是的话直接跳转
-#             url = rs
-#         elif not t:  # 不是在前面加上URL
-#             url = re.findall(r"((?:https?|ftp)://[\s\S]*?)/", url)
-#             url = url[0] + rs
-#
-#             logger.info(f"HTTP status code:302, Redirect to {url}")
-#
-#         response = httpx.head(url=url, headers=Headers, follow_redirects=False, verify=False,
-#                               proxyServer=getProxy())  # 再访问一次
-#
-#     return url
 class DownloadWorker:
     """只能出卖劳动力的最底层工作者"""
 
@@ -66,21 +41,25 @@ class DownloadTask(QThread):
 
     taskInited = Signal()  # 线程初始化成功
     # processChange = Signal(str)  # 目前进度 且因为C++ int最大值仅支持到2^31 PyQt又没有Qint类 故只能使用str代替
-    workerInfoChange = Signal(list)  # 目前进度 v3.2版本引进了分段式进度条
+    workerInfoChanged = Signal(list)  # 目前进度 v3.2版本引进了分段式进度条
+    speedChanged = Signal(int)  # 平均速度 因为 autoSpeedUp 功能需要实时计算平均速度 v3.4.4 起移入后端计算速度, 每秒速度可能超过 2^31 Bytes 吗？
     taskFinished = Signal()  # 内置信号的不好用
     gotWrong = Signal(str)  # 😭 我出问题了
 
     def __init__(self, url, preTaskNum: int = 8, filePath=None, fileName=None, autoSpeedUp=cfg.autoSpeedUp.value, parent=None):
         super().__init__(parent)
 
+        self.aioLock = asyncio.Lock()
         self.process = 0
         self.url = url
         self.fileName = fileName
         self.filePath = filePath
         self.preBlockNum = preTaskNum
         self.autoSpeedUp = autoSpeedUp
+
         self.workers: list[DownloadWorker] = []
         self.tasks: list[Task] = []
+        self.historySpeed = [0] * 10  # 历史速度 10 秒内的平均速度
 
         self.client = httpx.AsyncClient(headers=Headers, verify=False,
                                         proxy=getProxy(), limits=httpx.Limits(max_connections=256))
@@ -211,9 +190,10 @@ class DownloadTask(QThread):
                             if worker.endPos <= worker.process:
                                 break
                             if chunk:
-                                self.file.seek(worker.process)
-                                self.file.write(chunk)
-                                worker.process += 65536
+                                async with self.aioLock:
+                                    await self.file.seek(worker.process)
+                                    await self.file.write(chunk)
+                                    worker.process += 65536
 
                     if worker.process >= worker.endPos:
                         worker.process = worker.endPos
@@ -234,18 +214,21 @@ class DownloadTask(QThread):
     async def __supervisor(self):
         """实时统计进度并写入历史记录文件"""
 
+        for i in self.workers:
+            self.process += (i.process - i.startPos + 1)
+            LastProcess = self.process
+
         if self.autoSpeedUp:
             # 初始化变量
-            for i in self.workers:
-                self.process += (i.process - i.startPos + 1)  # 最初为计算每个线程的平均速度
-            LastProcess = self.process
-            maxSpeedPerConnect = 1  # 防止除以0
-            newTaskNum = len(self.tasks)
-            formerSpeed = 0
+            maxSpeedPerConnect = 1 # 防止除以0
+            additionalTaskNum = len(self.tasks) # 最初为计算每个线程的平均速度
+            formerAvgSpeed = 0 # 提速之前的平均速度
+            duringTime = 0 # 计算平均速度的时间间隔, 为 10 秒
 
         while not self.process == self.fileSize:
 
-            self.ghdFile.seek(0)
+            # 记录每块信息
+            await self.ghdFile.seek(0)
             info = []
             self.process = 0
 
@@ -256,40 +239,52 @@ class DownloadTask(QThread):
 
                 # 保存 workers 信息为二进制格式
                 data = struct.pack("<QQQ", i.startPos, i.process, i.endPos)
-                self.ghdFile.write(data)
+                await self.ghdFile.write(data)
 
-            self.ghdFile.flush()
-            self.ghdFile.truncate()
+            await self.ghdFile.flush()
+            await self.ghdFile.truncate()
 
-            self.workerInfoChange.emit(info)
+            self.workerInfoChanged.emit(info)
+
+            # 计算速度
+            speed = (self.process - LastProcess)
+            # print(f"speed: {speed}, process: {self.process}, LastProcess: {LastProcess}")
+            LastProcess = self.process
+            self.historySpeed.pop(0)
+            self.historySpeed.append(speed)
+            avgSpeed = sum(self.historySpeed) / 10
+
+            self.speedChanged.emit(avgSpeed)
+
+            # print(f"avgSpeed: {avgSpeed}, historySpeed: {self.historySpeed}")
 
             if self.autoSpeedUp:
-                speed = (self.process - LastProcess) / 1
-                LastProcess = self.process
-                speedPerConnect = formerSpeed / len(self.tasks)
-                
-                if speedPerConnect > maxSpeedPerConnect:
-                    maxSpeedPerConnect = speedPerConnect
+                if duringTime < 10:
+                    duringTime += 1
+                else:
+                    duringTime = 0
 
-                if maxSpeedPerConnect <= 1:
-                    await asyncio.sleep(1)
-                    continue
+                    speedPerConnect = avgSpeed / len(self.tasks)
+                    # print(f"taskNum: {len(self.tasks)}, speedPerConnect: {speedPerConnect}, maxSpeedPerConnect: {maxSpeedPerConnect}")
 
-                if formerSpeed == 0:
-                    formerSpeed = speed
-                    await asyncio.sleep(1)
-                    continue
+                    if speedPerConnect > maxSpeedPerConnect:
+                        maxSpeedPerConnect = speedPerConnect
 
-                #print(f'{self.taskNum}\t{(speed - formerSpeed) / newTaskNum}\t{maxSpeedPerConnect}\t{(speed - formerSpeed) / newTaskNum / maxSpeedPerConnect}')
+                    # if maxSpeedPerConnect <= 1:
+                    #     await asyncio.sleep(1)
+                    #     continue
 
-                if (speed - formerSpeed) / newTaskNum / maxSpeedPerConnect >= 0.85:
-                    #  新增加线程的效率 >= 0.9 时，新增线程
-                    logger.debug(f'自动提速增加新线程  {(speed - formerSpeed) / newTaskNum / maxSpeedPerConnect}')
-                    formerSpeed = speed
-                    newTaskNum = 1
+                    # logger.debug(f"当前效率: {(avgSpeed - formerAvgSpeed) / additionalTaskNum / maxSpeedPerConnect}, speed: {speed}, formerAvgSpeed: {formerAvgSpeed}, additionalTaskNum: {additionalTaskNum}, maxSpeedPerConnect: {maxSpeedPerConnect}")
 
-                    if len(self.tasks)  < 256:
-                        self.__reassignWorker()  # 新增线程
+                    if (avgSpeed - formerAvgSpeed) / additionalTaskNum / maxSpeedPerConnect >= 0.85:
+                        #  新增加线程的效率 >= 0.85 时，新增线程
+                        # logger.debug(f'自动提速增加新线程, 当前效率: {(avgSpeed - formerAvgSpeed) / additionalTaskNum / maxSpeedPerConnect}')
+                        formerAvgSpeed = avgSpeed
+                        additionalTaskNum = 4
+
+                        if len(self.tasks)  < 253:
+                            for i in range(4):
+                                self.__reassignWorker()  # 新增线程
 
 
             await asyncio.sleep(1)
@@ -297,7 +292,7 @@ class DownloadTask(QThread):
     async def __main(self):
         try:
             # 打开下载文件
-            self.file = open(f"{self.filePath}/{self.fileName}", "rb+")
+            self.file = await aiofiles.open(f"{self.filePath}/{self.fileName}", "rb+")
 
             # 启动 Worker
             for i in self.workers:
@@ -307,23 +302,23 @@ class DownloadTask(QThread):
 
                 self.tasks.append(_)
 
-            self.ghdFile = open(f"{self.filePath}/{self.fileName}.ghd", "wb")
+            self.ghdFile = await aiofiles.open(f"{self.filePath}/{self.fileName}.ghd", "wb")
             self.supervisorTask = asyncio.create_task(self.__supervisor())
 
             # 仅仅需要等待 supervisorTask
             try:
-                await self.supervisorTask  # supervisorTask 被 cancel 后，会抛出 CancelledError, 所以之后的代码不会执行
+                await self.supervisorTask
             except asyncio.CancelledError:
                 await self.client.aclose()
 
             # 关闭
             await self.client.aclose()
 
-            self.file.close()
-            self.ghdFile.close()
+            await self.file.close()
+            await self.ghdFile.close()
 
             if self.process == self.fileSize:
-                # 删除历史记录文件
+                # 下载完成时删除历史记录文件, 防止没下载完时误删
                 try:
                     Path(f"{self.filePath}/{self.fileName}.ghd").unlink()
 
@@ -345,29 +340,32 @@ class DownloadTask(QThread):
         try:
             self.supervisorTask.cancel()
         finally:
-            self.file.close()
-            self.ghdFile.close()
 
-        while not all(task.done() for task in self.tasks):  # 等待所有任务完成
-            for task in self.tasks:
-                try:
-                    task.cancel()
-                except RuntimeError:
-                    pass
-                except Exception as e:
-                    raise e
+            while not all(task.done() for task in self.tasks):  # 等待所有任务完成
+                for task in self.tasks:
+                    try:
+                        task.cancel()
+                    except RuntimeError:
+                        pass
+                    except Exception as e:
+                        raise e
 
-            time.sleep(0.05)
+                time.sleep(0.05)
 
     # @retry(3, 0.1)
     def run(self):
         self.__tempThread.join()
 
+        # 检验文件合法性并自动重命名
+        if sys.platform == "win32":
+            self.fileName = ''.join([i for i in self.fileName if i not in r'\/:*?"<>|'])  # 去除Windows系统不允许的字符
+        if len(self.fileName) > 255:
+            self.fileName = self.fileName[:255]
+
+        Path(f"{self.filePath}/{self.fileName}").touch()
+
         # 任务初始化完成
         self.taskInited.emit()
-
-        # 创建空文件
-        Path(f"{self.filePath}/{self.fileName}").touch()
 
         # TODO 发消息给主线程
         if not self.ableToParallelDownload:

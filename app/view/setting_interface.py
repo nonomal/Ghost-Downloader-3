@@ -197,14 +197,14 @@ class SettingInterface(ScrollArea):
             cfg.maxReassignSize,
             FIF.LIBRARY,
             "最大重新分配大小 (MB)",
-            '已完成的线程将帮助工作量最大的线程分担下载任务，防止文件越下越慢',
+            '每线程剩余量大于此值时, 有线程完成或自动提速条件满足会触发',
             self.downloadGroup
         )
 
         self.autoSpeedUpCard = SwitchSettingCard(
             FIF.SPEED_HIGH,
             "自动提速",
-            "实时检测线程效率并自动添加线程以提高下载速度 (Algorithm by @Alpha_Qian)",
+            "AI 实时检测线程效率并自动重新分配线程以提高下载速度",
             cfg.autoSpeedUp,
             self.downloadGroup
         )
@@ -467,13 +467,13 @@ class SettingInterface(ScrollArea):
         elif sys.platform == "darwin":
             import pwd
             if value:
-                with open(f"/Users/{pwd.getpwuid(os.getuid()).pw_name}/Library/LaunchAgents/app.ghost.downloader.plist", "w") as f:
+                with open(f"/Users/{pwd.getpwuid(os.getuid()).pw_name}/Library/LaunchAgents/com.xiaoyouchr.ghostdownloader.plist", "w") as f:
                     f.write(f"""<?xml version="1.0" encoding="UTF-8"?>
                                 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
                                 <plist version="1.0">
                                 <dict>
                                 <key>Label</key>
-                                <string>app.ghost.downloader</string>
+                                <string>com.xiaoyouchr.ghostdownloader</string>
                                 <key>ProgramArguments</key>
                                 <array>
                                 <string>'{QApplication.applicationFilePath()}'</string>
@@ -484,7 +484,7 @@ class SettingInterface(ScrollArea):
                                 </dict>
                                 </plist>""")
             else:
-                os.remove(f"/Users/{pwd.getpwuid(os.getuid()).pw_name}/Library/LaunchAgents/app.ghost.downloader.plist")
+                os.remove(f"/Users/{pwd.getpwuid(os.getuid()).pw_name}/Library/LaunchAgents/com.xiaoyouchr.ghostdownloader.plist")
         elif sys.platform == "linux":
             if value:
                 autoStartPath = Path(f'/home/{os.getlogin()}/.config/autostart/')

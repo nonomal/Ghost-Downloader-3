@@ -19,7 +19,7 @@ from ..common.methods import getProxy, getReadableSize, openFile
 proxy = getProxy()
 
 class TaskCard(CardWidget, Ui_TaskCard):
-    taskFinished = Signal()
+    taskStatusChanged = Signal()
 
     def __init__(self, url, path, maxBlockNum: int, name: str = None, status: str = "working",
                  parent=None, autoCreated=False):
@@ -33,8 +33,7 @@ class TaskCard(CardWidget, Ui_TaskCard):
         self.filePath = path
         self.maxBlockNum = maxBlockNum
         self.status = status  # working paused finished canceled
-        self.lastProcess = 0
-        self.autoCreated = autoCreated
+        self.autoCreated = autoCreated  # 事实上用来记录历史文件是否已经创建
 
         # Show Information
 
@@ -42,13 +41,12 @@ class TaskCard(CardWidget, Ui_TaskCard):
         self.TitleLabel.setText("正在初始化任务...")
 
         self.LogoPixmapLabel.setPixmap(QPixmap(":/image/logo.png"))
-        self.LogoPixmapLabel.setFixedSize(91, 91)
+        self.LogoPixmapLabel.setFixedSize(70, 70)
 
         self.progressBar = TaskProgressBar(maxBlockNum, self)
         self.progressBar.setObjectName(u"progressBar")
 
         self.verticalLayout.addWidget(self.progressBar)
-        self.historySpeed = [0] * 10
 
         if name:
             self.fileName = name
@@ -61,13 +59,6 @@ class TaskCard(CardWidget, Ui_TaskCard):
                 self.task = DownloadTask(url, maxBlockNum, path, name)
 
                 self.__onTaskInited()
-
-                # 写入未完成任务记录文件，以供下次打开时继续下载
-                if not self.autoCreated:
-                    with open("{}/Ghost Downloader 记录文件".format(cfg.appPath), "a", encoding="utf-8") as f:
-                        _ = {"url": self.url, "fileName": self.fileName, "filePath": str(self.filePath),
-                             "blockNum": self.maxBlockNum, "status": self.status}
-                        f.write(str(_) + "\n")
 
                 if self.status == "paused":
                     self.__showInfo("任务已经暂停")
@@ -88,7 +79,7 @@ class TaskCard(CardWidget, Ui_TaskCard):
 
             self.TitleLabel.setText(self.fileName)
             self.LogoPixmapLabel.setPixmap(pixmap)
-            self.LogoPixmapLabel.setFixedSize(91, 91)
+            self.LogoPixmapLabel.setFixedSize(70, 70)
 
             self.__onTaskFinished()
 
@@ -109,8 +100,17 @@ class TaskCard(CardWidget, Ui_TaskCard):
     def __onTaskInited(self):
         self.fileName = self.task.fileName
 
+        # 写入未完成任务记录文件，以供下次打开时继续下载
+        if self.fileName and not self.autoCreated:
+            with open("{}/Ghost Downloader 记录文件".format(cfg.appPath), "a", encoding="utf-8") as f:
+                _ = {"url": self.url, "fileName": self.fileName, "filePath": str(self.filePath),
+                     "blockNum": self.maxBlockNum, "status": self.status}
+                f.write(str(_) + "\n")
+
+            self.autoCreated = True
+
         # TODO 因为Windows会返回已经处理过的只有左上角一点点的图像，所以需要超分辨率触发条件
-        # _ = QFileIconProvider().icon(QFileInfo(f"{self.filePath}/{self.fileName}")).pixmap(48, 48).scaled(91, 91, aspectMode=Qt.AspectRatioMode.KeepAspectRatio,
+        # _ = QFileIconProvider().icon(QFileInfo(f"{self.filePath}/{self.fileName}")).pixmap(48, 48).scaled(70, 70, aspectMode=Qt.AspectRatioMode.KeepAspectRatio,
         #                            mode=Qt.TransformationMode.SmoothTransformation)  # 自动获取图标
         _ = QFileIconProvider().icon(QFileInfo(f"{self.filePath}/{self.fileName}")).pixmap(128, 128)  # 自动获取图标
 
@@ -122,7 +122,7 @@ class TaskCard(CardWidget, Ui_TaskCard):
         # 显示信息
         self.TitleLabel.setText(self.fileName)
         self.LogoPixmapLabel.setPixmap(pixmap)
-        self.LogoPixmapLabel.setFixedSize(91, 91)
+        self.LogoPixmapLabel.setFixedSize(70, 70)
 
         self.pauseButton.setEnabled(True)
         # self.processLabel.setText(f"0B/{getReadableSize(self.task.fileSize)}")
@@ -172,7 +172,6 @@ class TaskCard(CardWidget, Ui_TaskCard):
 
             self.task.start()
 
-
             try:
                 # 改变记录状态
                 with open("{}/Ghost Downloader 记录文件".format(cfg.appPath), "r", encoding="utf-8") as f:
@@ -190,6 +189,8 @@ class TaskCard(CardWidget, Ui_TaskCard):
                 self.__showInfo("任务正在开始")
                 self.status = "working"
                 # 得让 self.__tempThread 运行完才能运行暂停！ self.pauseButton.setEnabled(True)
+
+        self.taskStatusChanged.emit()
 
     def cancelTask(self, surely=False, completely=False):
 
@@ -259,41 +260,31 @@ class TaskCard(CardWidget, Ui_TaskCard):
         self.leftTimeLabel.show()
         self.processLabel.show()
 
-    def __changeStatus(self, content: list):
+    def __updateProcess(self, content: list):
         # 理论来说 worker 直增不减 所以ProgressBar不用考虑线程减少的问题
 
         _ = len(content) - self.progressBar.blockNum
         if _:
             self.progressBar.addProgressBar(content, _)
 
-        process = 0
-
         for e, i in enumerate(content):
-            process += i["process"] - i["start"]
             self.progressBar.progressBarList[e].setValue( ( (i["process"] - i["start"]) / (i["end"] - i["start"]) ) * 100)
-
-        duringLastSecondProcess = process - self.lastProcess
-
-        self.historySpeed.pop(0)
-        self.historySpeed.append(duringLastSecondProcess)
-        avgSpeed = sum(self.historySpeed) / len(self.historySpeed)
 
         # 如果还在显示消息状态，则调用 __hideInfo
         if self.infoLabel.isVisible():
             self.__hideInfo()
 
-        self.speedLabel.setText(f"{getReadableSize(avgSpeed)}/s")
-        self.processLabel.setText(f"{getReadableSize(process)}/{getReadableSize(self.task.fileSize)}")
+        self.processLabel.setText(f"{getReadableSize(self.task.process)}/{getReadableSize(self.task.fileSize)}")
 
-        
+    def __UpdateSpeed(self, avgSpeed: int):
+
+        self.speedLabel.setText(f"{getReadableSize(avgSpeed)}/s")
         # 计算剩余时间，并转换为 MM:SS
         try:
-            leftTime = (self.task.fileSize - process) / avgSpeed
+            leftTime = (self.task.fileSize - self.task.process) / avgSpeed
             self.leftTimeLabel.setText(f"{int(leftTime // 60):02d}:{int(leftTime % 60):02d}")
         except ZeroDivisionError:
             self.leftTimeLabel.setText("Infinity")
-
-        self.lastProcess = process
 
     def __onTaskFinished(self):
         self.pauseButton.setDisabled(True)
@@ -328,7 +319,7 @@ class TaskCard(CardWidget, Ui_TaskCard):
             else:
                 _ = QPixmap(":/image/logo.png")
             self.LogoPixmapLabel.setPixmap(_)
-            self.LogoPixmapLabel.setFixedSize(91, 91)
+            self.LogoPixmapLabel.setFixedSize(70, 70)
 
         self.status = "finished"
 
@@ -338,6 +329,8 @@ class TaskCard(CardWidget, Ui_TaskCard):
         self.pauseButton.setDisabled(False)
         self.cancelButton.setDisabled(False)
 
+        self.taskStatusChanged.emit()
+
     def runClacTask(self):
         self.__showInfo("正在校验MD5...")
         self.clacTask = ClacMD5Thread(f"{self.filePath}/{self.fileName}")
@@ -346,10 +339,10 @@ class TaskCard(CardWidget, Ui_TaskCard):
 
     def __connectSignalToSlot(self):
         self.task.taskInited.connect(self.__onTaskInited)
-        self.task.workerInfoChange.connect(self.__changeStatus)
+        self.task.workerInfoChanged.connect(self.__updateProcess)
+        self.task.speedChanged.connect(self.__UpdateSpeed)
 
         self.task.taskFinished.connect(self.__onTaskFinished)
-        self.task.taskFinished.connect(self.taskFinished)
 
         self.task.gotWrong.connect(self.__onTaskError)
 
