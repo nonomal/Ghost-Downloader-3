@@ -3,7 +3,6 @@ import inspect
 import os
 import re
 import sys
-import urllib
 from datetime import datetime, timedelta, timezone
 from email.utils import decode_rfc2231
 from functools import wraps
@@ -27,8 +26,9 @@ plugins = []
 def loadPlugins(mainWindow, directory="{}/plugins".format(QApplication.applicationDirPath())):
     try:
         for filename in os.listdir(directory):
-            if filename.endswith(".py"):
-                module_name = filename[:-3]  # 去掉文件的 .py 后缀
+            if filename.endswith(".py") or filename.endswith(".pyd") or filename.endswith(".so"):
+
+                module_name = filename.split(".")[0]
                 file_path = os.path.join(directory, filename)
 
                 # 动态导入模块
@@ -206,18 +206,17 @@ def getLinkInfo(url:str, headers:dict, fileName:str="", verify:bool=False, proxy
                 match = re.search(r'filename\*\s*=\s*([^;]+)', headerValue, re.IGNORECASE)
                 if match:
                     fileName = match.group(1)
-                    fileName = decode_rfc2231(fileName)
-                    fileName = urllib.parse.unquote(fileName[2])  # fileName* 后的部分是编码信息
+                    fileName = decode_rfc2231(fileName)[2] # fileName* 后的部分是编码信息
 
             # 如果 fileName* 没有成功获取，尝试处理普通的 fileName
             if not fileName and 'filename' in headerValue:
                 match = re.search(r'filename\s*=\s*["\']?([^"\';]+)["\']?', headerValue, re.IGNORECASE)
                 if match:
                     fileName = match.group(1)
-                    fileName = urllib.parse.unquote(fileName)
 
-            # 移除文件名头尾可能存在的引号
+            # 移除文件名头尾可能存在的引号并解码
             if fileName:
+                fileName = unquote(fileName)
                 fileName = fileName.strip('"\'')
             else:
                 raise KeyError
@@ -234,13 +233,12 @@ def getLinkInfo(url:str, headers:dict, fileName:str="", verify:bool=False, proxy
                 fileName = \
                     unquote(parse_qs(urlparse(url).query).get('response-content-disposition', [''])[0]).split(
                         "filename=")[-1]
-                # 去掉可能存在的引号
-                if fileName.startswith('"') and fileName.endswith('"'):
-                    fileName = fileName[1:-1]
-                elif fileName.startswith("'") and fileName.endswith("'"):
-                    fileName = fileName[1:-1]
 
-                if not fileName:
+                # 移除文件名头尾可能存在的引号并解码
+                if fileName:
+                    fileName = unquote(fileName)
+                    fileName = fileName.strip('"\'')
+                else:
                     raise KeyError
 
                 logger.debug(f"方法2获取文件名成功, 文件名:{fileName}")
@@ -248,9 +246,13 @@ def getLinkInfo(url:str, headers:dict, fileName:str="", verify:bool=False, proxy
             except (KeyError, IndexError) as e:
 
                 logger.info(f"方法2获取文件名失败, KeyError or IndexError:{e}")
-                fileName = urlparse(url).path.split('/')[-1]
+                fileName = unquote(urlparse(url).path.split('/')[-1])
 
-                if fileName:
+                if fileName:  # 如果没有后缀名，则使用 content-type 作为后缀名
+                    _ = fileName.split('.')
+                    if len(_) == 1:
+                        fileName += '.' + head["content-type"].split('/')[-1]
+
                     logger.debug(f"方法3获取文件名成功, 文件名:{fileName}")
                 else:
                     logger.debug("方法3获取文件名失败, 文件名为空")
